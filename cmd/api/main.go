@@ -26,6 +26,7 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+	base62Charset := os.Getenv("BASE62_CHARSET")
 
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
 	if err != nil {
@@ -39,14 +40,15 @@ func main() {
 		var req struct {
 			LongURL string `json:"long_url" binding:"required"`
 		}
+
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": "Invalid request"})
 			return
 		}
 
-		shortID := utils.GenerateShortID()
-
+		shortID := utils.GenerateShortID(base62Charset)
 		tableName := os.Getenv("DYNAMODB_TABLE_NAME")
+
 		err := repository.SaveURL(dbClient, tableName, shortID, req.LongURL)
 
 		if err != nil {
