@@ -1,4 +1,4 @@
-package main // Giữ package main để chạy được trên GoLand
+package handler
 
 import (
 	"context"
@@ -8,45 +8,41 @@ import (
 	"os"
 	"strings"
 
-	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
 
 var ctx = context.Background()
 var rdb *redis.Client
 
+// Kết nối Redis khi khởi tạo (Singleton)
 func init() {
-	// Nạp file .env nếu chạy local. Trên Vercel không có file này nên nó sẽ bỏ qua.
-	_ = godotenv.Load()
-
-	opt, err := redis.ParseURL(os.Getenv("UPSTASH_REDIS_URL"))
-	if err == nil {
-		rdb = redis.NewClient(opt)
-	}
+	opt, _ := redis.ParseURL(os.Getenv("UPSTASH_REDIS_URL"))
+	rdb = redis.NewClient(opt)
 }
 
-// Hàm xử lý chính - Vercel sẽ gọi hàm này (phải viết hoa chữ H)
+// Hàm Hash URL kết hợp với Salt từ biến môi trường
+func hashURL(longURL string, salt string) string {
+	data := longURL + salt
+	hash := sha256.Sum256([]byte(data))
+	// Lấy 7 ký tự đầu của mã Hex làm ID
+	return fmt.Sprintf("%x", hash)[:7]
+}
+
 func Handler(w http.ResponseWriter, r *http.Request) {
+	// 1. LUỒNG REDIRECT (GET /:id)
 	path := strings.TrimPrefix(r.URL.Path, "/")
-
-	// 1. Nếu vào trang chủ thì hiện giao diện
-	if (path == "" || path == "api/main") && r.Method == "GET" {
-		http.ServeFile(w, r, "public/index.html")
-		return
-	}
-
-	// 2. Luồng REDIRECT
-	if path != "" && path != "api/main" && r.Method == "GET" && !strings.Contains(path, ".") {
+	// Tránh redirect các file tĩnh hoặc api
+	if path != "" && path != "api/main" && !strings.Contains(path, ".") && r.Method == "GET" {
 		url, err := rdb.Get(ctx, path).Result()
 		if err != nil {
-			http.Error(w, "Link không tồn tại", http.StatusNotFound)
+			http.Error(w, "URL không tồn tại", http.StatusNotFound)
 			return
 		}
 		http.Redirect(w, r, url, http.StatusFound)
 		return
 	}
 
-	// 3. Luồng RÚT GỌN
+	// 2. LUỒNG RÚT GỌN (POST /)
 	if r.Method == "POST" {
 		longURL := r.FormValue("url")
 		customPath := strings.TrimSpace(r.FormValue("custom"))
@@ -59,36 +55,27 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 		var shortID string
 		if customPath != "" {
+			// Kiểm tra trùng lặp nếu dùng Custom Alias
 			exists, _ := rdb.Exists(ctx, customPath).Result()
 			if exists > 0 {
-				http.Error(w, "Bí danh đã tồn tại", http.StatusConflict)
+				http.Error(w, "Bí danh này đã được sử dụng", http.StatusConflict)
 				return
 			}
 			shortID = customPath
 		} else {
+			// Tạo ID bằng thuật toán Hash + Salt
 			shortID = hashURL(longURL, salt)
 		}
 
-		_ = rdb.Set(ctx, shortID, longURL, 0).Err()
+		// Lưu vào Redis (Không bao giờ hết hạn)
+		err := rdb.Set(ctx, shortID, longURL, 0).Err()
+		if err != nil {
+			http.Error(w, "Lỗi kết nối Database", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "%s", shortID)
 		return
 	}
-}
-
-// Hàm Hash
-func hashURL(longURL string, salt string) string {
-	data := longURL + salt
-	hash := sha256.Sum256([]byte(data))
-	return fmt.Sprintf("%x", hash)[:7]
-}
-
-// HÀM MAIN: Chỉ chạy khi bạn nhấn Run trên GoLand
-func main() {
-	http.HandleFunc("/", Handler)
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	fmt.Printf("🚀 Local server: http://localhost:%s\n", port)
-	http.ListenAndServe(":"+port, nil)
 }
