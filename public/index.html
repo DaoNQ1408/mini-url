@@ -59,7 +59,7 @@
         formData.append('custom', customInput.value);
 
         try {
-            const response = await fetch('/', { method: 'POST', body: formData });
+            const response = await fetch('/api/main', { method: 'POST', body: formData });
             const data = await response.text();
 
             if (response.ok) {
